@@ -109,6 +109,7 @@ interface CollaborationContextValue {
   getCurrentEditorContent: () => string | null;
   getFileContent: (filePath: string, workspaceRoot?: string) => string | null;
   setFileContent: (filePath: string, content: string, workspaceRoot?: string, forcePurge?: boolean) => void;
+  deleteFileContent: (filePath: string, workspaceRoot?: string, isDirectory?: boolean) => void;
   ydoc: Y.Doc | null;
   provider: WebsocketProvider | null;
   // Shared file methods
@@ -912,6 +913,33 @@ export function CollaborationProvider({
     [],
   );
 
+  // Completely wipe a file or directory's document state from the collaboration map.
+  const deleteFileContent = useCallback(
+    (filePath: string, workspaceRoot?: string, isDirectory?: boolean) => {
+      if (!ydocRef.current) return;
+      let relativePath = filePath;
+      if (workspaceRoot) {
+        relativePath = toRelativePath(filePath, workspaceRoot);
+      }
+      const docName = relativePath.replace(/[^a-zA-Z0-9]/g, "_");
+      const fileSystem = ydocRef.current.getMap<Y.Text>("file_system");
+      
+      ydocRef.current.transact(() => {
+        if (isDirectory) {
+          const prefix = docName + "_";
+          for (const key of Array.from(fileSystem.keys())) {
+            if (key === docName || key.startsWith(prefix)) {
+              fileSystem.delete(key);
+            }
+          }
+        } else {
+          fileSystem.delete(docName);
+        }
+      });
+    },
+    []
+  );
+
   // Share a file with all connected users
   const shareFile = useCallback((file: SharedFile) => {
     if (!ydocRef.current) {
@@ -1126,6 +1154,7 @@ export function CollaborationProvider({
       getCurrentEditorContent,
       getFileContent,
       setFileContent,
+      deleteFileContent,
       ydoc: ydocRef.current,
       provider: providerRef.current,
       // Shared file methods

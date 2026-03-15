@@ -186,11 +186,13 @@ function IDEContent() {
   const collabActiveRef = useRef(collaboration.isActive);
   const broadcastFileOpRef = useRef(collaboration.broadcastFileOp);
   const setFileContentRef = useRef(collaboration.setFileContent);
+  const deleteFileContentRef = useRef(collaboration.deleteFileContent);
   useEffect(() => {
     collabActiveRef.current = collaboration.isActive;
     broadcastFileOpRef.current = collaboration.broadcastFileOp;
     setFileContentRef.current = collaboration.setFileContent;
-  }, [collaboration.isActive, collaboration.broadcastFileOp, collaboration.setFileContent]);
+    deleteFileContentRef.current = collaboration.deleteFileContent;
+  }, [collaboration.isActive, collaboration.broadcastFileOp, collaboration.setFileContent, collaboration.deleteFileContent]);
 
   useEffect(() => {
     // Add platform class to body for OS-specific styling
@@ -823,13 +825,11 @@ function IDEContent() {
       try {
         const wsRoot = workspaceRootRef.current;
         if (collabActiveRef.current && wsRoot) {
-          // Clear Y.Text for the deleted file(s) so that stale content is
-          // never returned by getFileContent if the user later undoes the
-          // delete.  Without this, setFileContent in handleFileCreated would
-          // see non-empty Y.Text and skip writing the restored savedContent.
-          if (type === "file") {
-            setFileContentRef.current(deletedPath, "", wsRoot);
-          }
+          // Completely remove Y.Text for the deleted file(s) from the Y.Map 
+          // so that stale references and content are destroyed. When recreated,
+          // it will spawn a fresh Y.Text to avoid old state bubbling back up.
+          deleteFileContentRef.current(deletedPath, wsRoot, type === "directory");
+          
           const relativePath = toRelativePath(deletedPath, wsRoot);
           broadcastFileOpRef.current({
             type: "delete",
