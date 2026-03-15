@@ -186,13 +186,11 @@ function IDEContent() {
   const collabActiveRef = useRef(collaboration.isActive);
   const broadcastFileOpRef = useRef(collaboration.broadcastFileOp);
   const setFileContentRef = useRef(collaboration.setFileContent);
-  const deleteFileContentRef = useRef(collaboration.deleteFileContent);
   useEffect(() => {
     collabActiveRef.current = collaboration.isActive;
     broadcastFileOpRef.current = collaboration.broadcastFileOp;
     setFileContentRef.current = collaboration.setFileContent;
-    deleteFileContentRef.current = collaboration.deleteFileContent;
-  }, [collaboration.isActive, collaboration.broadcastFileOp, collaboration.setFileContent, collaboration.deleteFileContent]);
+  }, [collaboration.isActive, collaboration.broadcastFileOp, collaboration.setFileContent]);
 
   useEffect(() => {
     // Add platform class to body for OS-specific styling
@@ -825,10 +823,13 @@ function IDEContent() {
       try {
         const wsRoot = workspaceRootRef.current;
         if (collabActiveRef.current && wsRoot) {
-// Clear Y.Text for the deleted file(s) so that stale content is not returned.
-          // Note: don't delete from the Y.Map completely to avoid race conditions with bindings.
-          deleteFileContentRef.current(deletedPath, wsRoot, type === "directory");
-          
+          // Clear Y.Text for the deleted file(s) so that stale content is
+          // never returned by getFileContent if the user later undoes the
+          // delete.  Without this, setFileContent in handleFileCreated would
+          // see non-empty Y.Text and skip writing the restored savedContent.
+          if (type === "file") {
+            setFileContentRef.current(deletedPath, "", wsRoot);
+          }
           const relativePath = toRelativePath(deletedPath, wsRoot);
           broadcastFileOpRef.current({
             type: "delete",
@@ -908,45 +909,24 @@ function IDEContent() {
       try {
         const wsRoot = workspaceRootRef.current;
         if (collabActiveRef.current && wsRoot) {
-          // Y.Text is NEVER wiped on delete (to preserve cursor RelativePositions),
-          // so it is the authoritative collaborative state at undo time.
+          // A file create for an existing path (delete+recreate) must always
+          // reset the collaborative Y.Text object. Reusing any previous Y.Text
+          // content resurrects stale state across peers.
           //
-          // Priority 1: Y.Text content — preserves all Y.Text items and cursor
-          //   positions. Do NOT call setFileContent (no-op at best, destructive at
-          //   worst if disk content differs by even a line ending).
-          // Priority 2: savedContent from undo stack — used only if Y.Text is empty
-          //   (shouldn't happen, but safety net).  Seeds Y.Text via setFileContent.
-          // Priority 3: read from disk — last fallback.
-
-          const ytextContent = collaboration.isActive
-            ? collaboration.getFileContent(fullPath, wsRoot)
-            : null;
-
-          if (ytextContent) {
-            // Y.Text already has content — but since the file was deleted,
-            // the CRDT items might be out of sync with other machines or y-monaco
-            // might fail to re-bind cleanly to the same old items.
-            // Forcing a purge guarantees M1 and M2 get a completely fresh CRDT
-            // tree for this file, which guarantees perfect cursor sync.
-            restoredContent = ytextContent;
-            console.log(`Forcing Y.Text purge for restored file: ${fullPath}`);
-            setFileContentRef.current(fullPath, restoredContent, wsRoot, true /* force purge */);
-          } else if (savedContent !== undefined) {
-            // Y.Text is empty — seed it from the pre-delete disk snapshot.
+          // For undo restores we prefer the captured pre-delete content.
+          // For regular creates we use disk content (typically empty for new files).
+          if (savedContent !== undefined) {
             restoredContent = savedContent;
-            console.log(`Seeding Y.Text from savedContent for restored file: ${fullPath}`);
-            setFileContentRef.current(fullPath, restoredContent, wsRoot, true /* force purge */);
           } else {
-            // Last resort: read from disk.
             try {
               restoredContent = await window.electronAPI.fs.readFile(fullPath);
             } catch (readErr) {
               console.warn(`Could not read file for broadcast: ${fullPath}`, readErr);
             }
-            if (restoredContent) {
-              setFileContentRef.current(fullPath, restoredContent, wsRoot, true /* force purge */);
-            }
           }
+
+          console.log(`Forcing Y.Text purge for created file: ${fullPath}`);
+          setFileContentRef.current(fullPath, restoredContent, wsRoot, true /* force purge */);
 
           // Write authoritative content back to disk so that non-editor
           // opens (via openFile → readFile) always see the correct content.
@@ -1087,23 +1067,16 @@ function IDEContent() {
                 // Ignore the upcoming chokidar add event
                 remoteCreatesRef.current.add(fullPath);
                 await window.electronAPI.fs.createFile(fullPath);
-                if (op.content) {
+                if (op.content !== undefined) {
                   await window.electronAPI.fs.writeFile(fullPath, op.content);
                 }
               } catch (createErr) {
                 console.warn(`Remote create-file failed: ${relPath}`, createErr);
               }
-              // Seed the Yjs Y.Text for the recreated file ONLY if Y.Text is
-              // empty.  If it already has content (which it normally will,
-              // since Y.Text is never wiped on delete), skip — otherwise the
-              // delete+insert in setFileContent destroys all Y.Text items
-              // and invalidates cursor RelativePositions in awareness.
-              if (op.content != null) {
-                const existingContent = collaboration.getFileContent(fullPath, wsRoot);
-                if (!existingContent) {
-                  setFileContentRef.current(fullPath, op.content, wsRoot);
-                }
-              }
+              // Always force a fresh Y.Text object on create-file events.
+              // This prevents stale CRDT history from surviving delete+recreate
+              // when the same relative path is reused.
+              setFileContentRef.current(fullPath, op.content ?? "", wsRoot, true /* force purge */);
               // Only update existing tabs. If the tab was closed, leave it closed.
               // Y.Text is already seeded above, so collaboration will start
               // automatically when the user opens the file from the file tree.
@@ -1111,7 +1084,7 @@ function IDEContent() {
                 const fNorm = fullPath.replace(/\\/g, "/").toLowerCase();
                 return prev.map((t) =>
                   t.path.replace(/\\/g, "/").toLowerCase() === fNorm
-                    ? { ...t, isDeleted: false, content: op.content || t.content }
+                    ? { ...t, isDeleted: false, content: op.content ?? "" }
                     : t
                 );
               });

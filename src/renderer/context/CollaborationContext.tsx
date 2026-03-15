@@ -109,7 +109,6 @@ interface CollaborationContextValue {
   getCurrentEditorContent: () => string | null;
   getFileContent: (filePath: string, workspaceRoot?: string) => string | null;
   setFileContent: (filePath: string, content: string, workspaceRoot?: string, forcePurge?: boolean) => void;
-  deleteFileContent: (filePath: string, workspaceRoot?: string, isDirectory?: boolean) => void;
   ydoc: Y.Doc | null;
   provider: WebsocketProvider | null;
   // Shared file methods
@@ -856,9 +855,10 @@ export function CollaborationProvider({
       const ytext = fileSystem.get(docName);
       if (!ytext) return null;
 
-      const content = ytext.toString();
-      // Return null if the Y.Text is empty (file hasn't been shared yet)
-      return content.length > 0 ? content : null;
+      // Empty string is a valid collaborative state for newly created or
+      // intentionally cleared files. Returning null here causes callers to
+      // fall back to stale tab snapshots.
+      return ytext.toString();
     },
     [],
   );
@@ -881,20 +881,18 @@ export function CollaborationProvider({
       let ytext = fileSystem.get(docName);
 
       if (forcePurge) {
-        // Clear existing Y.Text instead of replacing it. Replacing causes race conditions
-        // and broken bindings for any y-monaco instances already attached.
+        // Create a completely virgin Y.Text. This guarantees that all clients who
+        // bind to this new object do not experience lingering y-monaco corrupted
+        // observers or fractured tombstoned CRDT items.
+        // First delete contents of the old one in case anyone happens to still be observing it
         ydocRef.current.transact(() => {
           if (ytext) {
             ytext!.delete(0, ytext!.length);
-            if (content.length > 0) {
-              ytext!.insert(0, content);
-            }
-          } else {
-            const freshText = new Y.Text();
-            fileSystem.set(docName, freshText);
-            if (content.length > 0) {
-              freshText.insert(0, content);
-            }
+          }
+          const freshText = new Y.Text();
+          fileSystem.set(docName, freshText);
+          if (content.length > 0) {
+            freshText.insert(0, content);
           }
         });
       } else {
@@ -913,35 +911,6 @@ export function CollaborationProvider({
       }
     },
     [],
-  );
-
-  // Clear a file or directory's document state, leaving the Y.Text reference intact.
-  const deleteFileContent = useCallback(
-    (filePath: string, workspaceRoot?: string, isDirectory?: boolean) => {
-      if (!ydocRef.current) return;
-      let relativePath = filePath;
-      if (workspaceRoot) {
-        relativePath = toRelativePath(filePath, workspaceRoot);
-      }
-      const docName = relativePath.replace(/[^a-zA-Z0-9]/g, "_");
-      const fileSystem = ydocRef.current.getMap<Y.Text>("file_system");
-      
-      ydocRef.current.transact(() => {
-        if (isDirectory) {
-          const prefix = docName + "_";
-          for (const key of Array.from(fileSystem.keys())) {
-            if (key === docName || key.startsWith(prefix)) {
-              const ytext = fileSystem.get(key);
-              if (ytext) ytext.delete(0, ytext.length);
-            }
-          }
-        } else {
-          const ytext = fileSystem.get(docName);
-          if (ytext) ytext.delete(0, ytext.length);
-        }
-      });
-    },
-    []
   );
 
   // Share a file with all connected users
@@ -1158,7 +1127,6 @@ export function CollaborationProvider({
       getCurrentEditorContent,
       getFileContent,
       setFileContent,
-      deleteFileContent,
       ydoc: ydocRef.current,
       provider: providerRef.current,
       // Shared file methods
