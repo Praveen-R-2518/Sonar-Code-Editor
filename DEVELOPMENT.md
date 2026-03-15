@@ -78,3 +78,47 @@ npm run package:mac    # For macOS (.dmg, .app)
 npm run package:linux  # For Linux (.AppImage)
 ```
 *Compiled artifacts will be located in the `release/` directory.*
+
+## Collaboration Regression Playbook
+
+Use this manual test before each beta/release to prevent stale-content regressions in collaborative mode.
+
+### Test Case: Delete + Recreate Same File Name
+
+Goal:
+- Verify that deleting a file on one machine and recreating the same path on another machine does not resurrect stale collaborative content.
+
+Setup:
+1. Start host on PC-1 and join from PC-2.
+2. Open the same shared workspace on both peers.
+3. Ensure `index.html` exists and has recognizable content, for example `OLD-CONTENT`.
+
+Steps:
+1. On PC-1, delete `index.html` from the file tree.
+2. On PC-2, create a new file named `index.html`.
+3. On PC-2, open another file (do not keep `index.html` active).
+4. On PC-1, open `index.html`, add `NEW-CONTENT`, and save.
+5. Open/reopen `index.html` on both PCs.
+
+Expected Result:
+1. Both peers show the latest `NEW-CONTENT`.
+2. Neither peer falls back to pre-delete `OLD-CONTENT`.
+3. No silent revert happens when switching tabs or reopening the file.
+
+Failure Symptoms (regression):
+1. `index.html` reopens with old content on either peer.
+2. Edits made after recreate do not propagate to the other peer.
+3. Content appears correct briefly, then reverts after tab switch.
+
+### Extra Validation Matrix
+
+Run the same case with the following variants:
+1. Recreated file starts empty, then edited by PC-1.
+2. Recreated file starts with non-empty content from PC-2, then edited by PC-1.
+3. Autosave ON and Autosave OFF.
+4. Active tab on recreated file vs inactive tab during remote edits.
+
+Pass Criteria:
+1. Latest edit always wins and replicates to both peers.
+2. Empty file state is preserved when intentionally empty.
+3. Reopen of file never restores pre-delete content.

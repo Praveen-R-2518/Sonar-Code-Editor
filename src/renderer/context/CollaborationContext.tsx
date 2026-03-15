@@ -855,10 +855,10 @@ export function CollaborationProvider({
       const ytext = fileSystem.get(docName);
       if (!ytext) return null;
 
-      // Empty string is a valid collaborative state for newly created or
-      // intentionally cleared files. Returning null here causes callers to
-      // fall back to stale tab snapshots.
-      return ytext.toString();
+      const content = ytext.toString();
+      // Return the exact collaborative value, including empty string.
+      // Empty content is a valid synchronized state for a file.
+      return content;
     },
     [],
   );

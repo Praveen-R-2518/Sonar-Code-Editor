@@ -828,7 +828,7 @@ function IDEContent() {
           // delete.  Without this, setFileContent in handleFileCreated would
           // see non-empty Y.Text and skip writing the restored savedContent.
           if (type === "file") {
-            setFileContentRef.current(deletedPath, "", wsRoot);
+            setFileContentRef.current(deletedPath, "", wsRoot, true);
           }
           const relativePath = toRelativePath(deletedPath, wsRoot);
           broadcastFileOpRef.current({
@@ -909,28 +909,43 @@ function IDEContent() {
       try {
         const wsRoot = workspaceRootRef.current;
         if (collabActiveRef.current && wsRoot) {
-          // A file create for an existing path (delete+recreate) must always
-          // reset the collaborative Y.Text object. Reusing any previous Y.Text
-          // content resurrects stale state across peers.
-          //
-          // For undo restores we prefer the captured pre-delete content.
-          // For regular creates we use disk content (typically empty for new files).
-          if (savedContent !== undefined) {
-            restoredContent = savedContent;
+          if (isUndo) {
+            // Undo restore prefers collaborative content if it exists, and falls
+            // back to the saved snapshot when collaboration content is empty.
+            const ytextContent = collaboration.isActive
+              ? collaboration.getFileContent(fullPath, wsRoot)
+              : null;
+
+            if (ytextContent && ytextContent.length > 0) {
+              restoredContent = ytextContent;
+            } else if (savedContent !== undefined) {
+              restoredContent = savedContent;
+            } else {
+              try {
+                restoredContent = await window.electronAPI.fs.readFile(fullPath);
+              } catch (readErr) {
+                console.warn(`Could not read file for broadcast: ${fullPath}`, readErr);
+              }
+            }
           } else {
-            try {
-              restoredContent = await window.electronAPI.fs.readFile(fullPath);
-            } catch (readErr) {
-              console.warn(`Could not read file for broadcast: ${fullPath}`, readErr);
+            // Fresh create for an existing path (delete -> create same name)
+            // must not reuse stale collaborative content from a prior file.
+            if (savedContent !== undefined) {
+              restoredContent = savedContent;
+            } else {
+              try {
+                restoredContent = await window.electronAPI.fs.readFile(fullPath);
+              } catch (readErr) {
+                console.warn(`Could not read file for broadcast: ${fullPath}`, readErr);
+              }
             }
           }
 
-          console.log(`Forcing Y.Text purge for created file: ${fullPath}`);
           setFileContentRef.current(fullPath, restoredContent, wsRoot, true /* force purge */);
 
           // Write authoritative content back to disk so that non-editor
           // opens (via openFile → readFile) always see the correct content.
-          if (restoredContent) {
+          if (restoredContent !== undefined) {
             try {
               await window.electronAPI.fs.writeFile(fullPath, restoredContent);
             } catch (writeErr) {
@@ -1067,16 +1082,17 @@ function IDEContent() {
                 // Ignore the upcoming chokidar add event
                 remoteCreatesRef.current.add(fullPath);
                 await window.electronAPI.fs.createFile(fullPath);
-                if (op.content !== undefined) {
+                if (op.content != null) {
                   await window.electronAPI.fs.writeFile(fullPath, op.content);
                 }
               } catch (createErr) {
                 console.warn(`Remote create-file failed: ${relPath}`, createErr);
               }
-              // Always force a fresh Y.Text object on create-file events.
-              // This prevents stale CRDT history from surviving delete+recreate
-              // when the same relative path is reused.
-              setFileContentRef.current(fullPath, op.content ?? "", wsRoot, true /* force purge */);
+              if (op.content != null) {
+                // Delete+recreate with same path must replace Y.Text identity so
+                // stale CRDT history cannot resurrect prior file content.
+                setFileContentRef.current(fullPath, op.content, wsRoot, true);
+              }
               // Only update existing tabs. If the tab was closed, leave it closed.
               // Y.Text is already seeded above, so collaboration will start
               // automatically when the user opens the file from the file tree.
@@ -1084,7 +1100,7 @@ function IDEContent() {
                 const fNorm = fullPath.replace(/\\/g, "/").toLowerCase();
                 return prev.map((t) =>
                   t.path.replace(/\\/g, "/").toLowerCase() === fNorm
-                    ? { ...t, isDeleted: false, content: op.content ?? "" }
+                    ? { ...t, isDeleted: false, content: op.content ?? t.content }
                     : t
                 );
               });
@@ -1102,6 +1118,11 @@ function IDEContent() {
                 await window.electronAPI.fs.deleteItem(fullPath);
               } catch {
                 // File may already be gone (e.g. after a failed rename); treat as success
+              }
+              if (!op.isDirectory) {
+                // Clear and replace Y.Text for deleted files so recreate with the
+                // same path starts from a fresh collaborative document.
+                setFileContentRef.current(fullPath, "", wsRoot, true);
               }
               // Update tabs locally WITHOUT calling handleFileDeleted (which would
               // re-broadcast the op and create an infinite echo loop)
