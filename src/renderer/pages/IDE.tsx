@@ -825,9 +825,8 @@ function IDEContent() {
       try {
         const wsRoot = workspaceRootRef.current;
         if (collabActiveRef.current && wsRoot) {
-          // Completely remove Y.Text for the deleted file(s) from the Y.Map 
-          // so that stale references and content are destroyed. When recreated,
-          // it will spawn a fresh Y.Text to avoid old state bubbling back up.
+// Clear Y.Text for the deleted file(s) so that stale content is not returned.
+          // Note: don't delete from the Y.Map completely to avoid race conditions with bindings.
           deleteFileContentRef.current(deletedPath, wsRoot, type === "directory");
           
           const relativePath = toRelativePath(deletedPath, wsRoot);

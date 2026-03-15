@@ -881,18 +881,20 @@ export function CollaborationProvider({
       let ytext = fileSystem.get(docName);
 
       if (forcePurge) {
-        // Create a completely virgin Y.Text. This guarantees that all clients who
-        // bind to this new object do not experience lingering y-monaco corrupted
-        // observers or fractured tombstoned CRDT items.
-        // First delete contents of the old one in case anyone happens to still be observing it
+        // Clear existing Y.Text instead of replacing it. Replacing causes race conditions
+        // and broken bindings for any y-monaco instances already attached.
         ydocRef.current.transact(() => {
           if (ytext) {
             ytext!.delete(0, ytext!.length);
-          }
-          const freshText = new Y.Text();
-          fileSystem.set(docName, freshText);
-          if (content.length > 0) {
-            freshText.insert(0, content);
+            if (content.length > 0) {
+              ytext!.insert(0, content);
+            }
+          } else {
+            const freshText = new Y.Text();
+            fileSystem.set(docName, freshText);
+            if (content.length > 0) {
+              freshText.insert(0, content);
+            }
           }
         });
       } else {
@@ -913,7 +915,7 @@ export function CollaborationProvider({
     [],
   );
 
-  // Completely wipe a file or directory's document state from the collaboration map.
+  // Clear a file or directory's document state, leaving the Y.Text reference intact.
   const deleteFileContent = useCallback(
     (filePath: string, workspaceRoot?: string, isDirectory?: boolean) => {
       if (!ydocRef.current) return;
@@ -929,11 +931,13 @@ export function CollaborationProvider({
           const prefix = docName + "_";
           for (const key of Array.from(fileSystem.keys())) {
             if (key === docName || key.startsWith(prefix)) {
-              fileSystem.delete(key);
+              const ytext = fileSystem.get(key);
+              if (ytext) ytext.delete(0, ytext.length);
             }
           }
         } else {
-          fileSystem.delete(docName);
+          const ytext = fileSystem.get(docName);
+          if (ytext) ytext.delete(0, ytext.length);
         }
       });
     },
